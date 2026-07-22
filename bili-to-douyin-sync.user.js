@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         B站关注 → 抖音半自动同步
 // @namespace    https://github.com/askofcc/bili-to-douyin-sync
-// @version      0.5.4
-// @description  从 B 站导出关注列表，在抖音网页端半自动搜索同名 UP 并关注；精确匹配 + 双重核验 + 关注后冷却
+// @version      0.5.5
+// @description  从 B 站导出关注列表，在抖音网页端半自动搜索同名 UP 并关注；精确匹配；识别 Web 静默限流
 // @author       askofcc
 // @homepageURL  https://github.com/askofcc/bili-to-douyin-sync
 // @supportURL   https://github.com/askofcc/bili-to-douyin-sync/issues
@@ -204,6 +204,7 @@
       "no_result",
       "need_click",
       "auto_failed",
+      "rate_limited",
       "problem",
     ].includes(s);
   }
@@ -222,6 +223,7 @@
         no_result: "无结果",
         need_click: "无关注按钮",
         auto_failed: "点击未确认",
+        rate_limited: "疑似限流/封控",
         pending: "未处理",
       }[s] || s
     );
@@ -307,9 +309,53 @@
     saveNav(nav);
   }
 
+  function pageToastText() {
+    // 尽量抓 toast / 弹层文案（Web 经常不展示，但偶尔会有）
+    const nodes = Array.from(
+      document.querySelectorAll(
+        '[class*="toast" i], [class*="Toast" i], [class*="message" i], [class*="dialog" i], [class*="modal" i], [role="alert"], [role="status"]'
+      )
+    );
+    return nodes
+      .map((n) => txt(n))
+      .filter(Boolean)
+      .join(" | ")
+      .slice(0, 800);
+  }
+
+  function detectRateLimitMessage() {
+    const body = document.body ? txt(document.body).slice(0, 5000) : "";
+    const toast = pageToastText();
+    const t = body + " " + toast;
+    const patterns = [
+      /今天关注过多/,
+      /关注过多/,
+      /关注次数过多/,
+      /操作过于频繁/,
+      /访问过于频繁/,
+      /请稍后再试/,
+      /账号存在风险/,
+      /功能暂不可用/,
+      /无法关注/,
+      /不能关注/,
+      /关注失败/,
+      /请完成验证/,
+      /安全验证/,
+      /异常流量/,
+    ];
+    for (const re of patterns) {
+      if (re.test(t)) {
+        const m = t.match(re);
+        return m ? m[0] : "rate_limit";
+      }
+    }
+    return "";
+  }
+
   function hasCaptcha() {
-    const t = document.body ? txt(document.body).slice(0, 3500) : "";
-    return /请完成验证|访问过于频繁|操作过于频繁|异常流量|安全验证/.test(t);
+    return !!detectRateLimitMessage() || /请完成验证|安全验证|异常流量/.test(
+      document.body ? txt(document.body).slice(0, 3500) : ""
+    );
   }
 
   function injectStyles() {
@@ -1636,11 +1682,54 @@
           await sleep(700);
         }
 
-        const nextStatus = verified && verified.ok ? "auto_followed" : "auto_failed";
-        log((verified && verified.ok ? "关注成功：" : "点击后未确认成功：") + cur.item.name);
+        const limitMsg = detectRateLimitMessage();
+        let nextStatus = verified && verified.ok ? "auto_followed" : "auto_failed";
+        if (verified && verified.ok) {
+          // 成功：清零连续失败计数
+          sessionStorage.setItem("bds_silent_fail_streak", "0");
+          log("关注成功：" + cur.item.name);
+        } else {
+          // Web 端封控常不弹窗：点了关注但按钮仍是「关注」
+          const stillFollow =
+            best.followBtn && isFollowText(txt(best.followBtn)) && !isFollowedText(txt(best.followBtn));
+          const streak = Number(sessionStorage.getItem("bds_silent_fail_streak") || 0) + 1;
+          sessionStorage.setItem("bds_silent_fail_streak", String(streak));
+          if (limitMsg) {
+            nextStatus = "rate_limited";
+            log("检测到限流文案：「" + limitMsg + "」→ 暂停自动");
+          } else {
+            log(
+              "点击后未确认成功：" +
+                cur.item.name +
+                "（按钮仍可能是「关注」；Web 端常静默失败，手机端会提示「今天关注过多」） 连续未确认=" +
+                streak
+            );
+          }
+          // 连续 2 次点击未变成已关注：大概率官方限流，停机避免空跑
+          if (nextStatus === "auto_failed" && streak >= 2) {
+            nextStatus = "rate_limited";
+            log(
+              "连续 " +
+                streak +
+                " 次关注未生效，判定为 Web 静默限流。请打开手机抖音确认是否提示「今天关注过多」，稍后再继续。"
+            );
+          }
+        }
+
         busy = false;
+        if (nextStatus === "rate_limited") {
+          running = false;
+          setBadge("err", "限流");
+          status.textContent =
+            "疑似官方限流（Web 常无提示）。手机端点关注若提示「今天关注过多」即确认。已暂停自动。";
+          // 仍记录当前项，方便之后从下一项继续
+          mark("rate_limited");
+          refresh();
+          return;
+        }
+
         (async () => {
-          // 只有真正点了关注（成功或未确认）都拉长间隔；失败未点的 no_result 不加这段
+          // 成功关注后冷却；未确认也稍等，避免连点
           if (nextStatus === "auto_followed" || nextStatus === "auto_failed") {
             await waitAfterFollow(log, (t) => { status.textContent = t; });
           }
@@ -1660,6 +1749,8 @@
 
     async function start(force) {
       running = true;
+      // 手动点开始视为用户确认可继续，清零静默失败计数
+      sessionStorage.setItem("bds_silent_fail_streak", "0");
       persist();
       refreshMode();
       let cur = refresh();
@@ -1764,7 +1855,7 @@
       ]),
       el("div", { className: "row" }, [btnStart, btnPause, btnProb]),
       el("div", { className: "row" }, [btnF, btnS, btnX, btnReset]),
-      el("div", { className: "mini", text: "自动：匹配后点关注；成功后随机再等 10–15 秒才跳下一个（防验证码）。没找到仍按原逻辑等待。" }),
+      el("div", { className: "mini", text: "自动：精确匹配后点关注；成功后冷却 10–15 秒。Web 限流常无提示：连续点关注无效会自动暂停（请用手机端确认「今天关注过多」）。" }),
       status, logBox, importArea,
       el("div", { className: "row" }, [btnImport]),
     ]);
