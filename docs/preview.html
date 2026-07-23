@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>B站→抖音 面板预览</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #0b1220;
+    color: #e5e7eb;
+  }
+  .page {
+    min-height: 100vh;
+    position: relative;
+    overflow: hidden;
+  }
+  .fake-site {
+    padding: 24px 28px 120px;
+    min-height: 100vh;
+  }
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 16px;
+    background: rgba(17,24,39,.9);
+    border: 1px solid #1f2937;
+    border-radius: 12px;
+    margin-bottom: 20px;
+  }
+  .logo {
+    font-weight: 800;
+    font-size: 18px;
+  }
+  .logo.bili { color: #00a1d6; }
+  .logo.dy { color: #fe2c55; }
+  .chip {
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: #111827;
+    border: 1px solid #374151;
+    color: #9ca3af;
+    font-size: 12px;
+  }
+  .hero {
+    max-width: 720px;
+    margin: 40px 0 0 8px;
+  }
+  .hero h1 {
+    margin: 0 0 10px;
+    font-size: 28px;
+    letter-spacing: -0.02em;
+  }
+  .hero p {
+    margin: 0;
+    color: #9ca3af;
+    max-width: 520px;
+  }
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    margin-top: 28px;
+    max-width: 760px;
+  }
+  .card {
+    background: #111827;
+    border: 1px solid #1f2937;
+    border-radius: 12px;
+    padding: 14px;
+    min-height: 88px;
+  }
+  .card .t { font-weight: 700; margin-bottom: 6px; }
+  .card .s { color: #6b7280; font-size: 12px; }
+
+  /* panel styles mirror script */
+  #bds-panel{
+    position:fixed;right:24px;bottom:24px;z-index:2147483646;width:360px;max-height:78vh;overflow:auto;
+    background:#111827;color:#f9fafb;border:1px solid #374151;border-radius:12px;
+    box-shadow:0 12px 40px rgba(0,0,0,.45);
+    font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif
+  }
+  #bds-panel .hd{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-bottom:1px solid #374151;position:sticky;top:0;background:#111827}
+  #bds-panel .bd{padding:12px;display:grid;gap:8px}
+  #bds-panel .row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  #bds-panel button{appearance:none;border:0;border-radius:8px;padding:7px 10px;background:#2563eb;color:#fff;font-weight:700;cursor:pointer;font-size:12px}
+  #bds-panel button.sec{background:#374151}
+  #bds-panel button.ok{background:#059669}
+  #bds-panel button.warn{background:#d97706}
+  #bds-panel button.danger{background:#b91c1c}
+  #bds-panel .muted{color:#9ca3af;font-size:12px}
+  #bds-panel .mini{font-size:11px;color:#9ca3af}
+  #bds-panel .name{font-size:16px;font-weight:800;word-break:break-all;padding:8px 10px;background:#1f2937;border-radius:8px}
+  #bds-panel .bar{height:8px;background:#1f2937;border-radius:99px;overflow:hidden}
+  #bds-panel .bar>i{display:block;height:100%;width:62%;background:#34d399}
+  #bds-panel .stats{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  #bds-panel .stat{background:#1f2937;border-radius:8px;padding:6px 8px}
+  #bds-panel .stat b{display:block;font-size:16px}
+  #bds-panel .log{max-height:130px;overflow:auto;background:#0b1220;border-radius:8px;padding:6px 8px;font:11px/1.4 ui-monospace,monospace;color:#d1d5db}
+  #bds-panel .mode{display:grid;grid-template-columns:1fr 1fr;gap:6px;background:#0b1220;padding:4px;border-radius:10px;border:1px solid #374151}
+  #bds-panel .mode button{background:transparent;color:#9ca3af}
+  #bds-panel .mode button.on{background:#2563eb;color:#fff}
+  #bds-panel .mode button.on.m{background:#d97706}
+  #bds-panel .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:800;background:#065f46;color:#a7f3d0}
+  #bds-panel select,#bds-panel input[type=number]{
+    background:#0b1220;color:#e5e7eb;border:1px solid #374151;border-radius:6px;padding:4px 6px
+  }
+  #bds-panel label.mini{display:flex;align-items:center;gap:6px}
+  .page.bili .fake-site { background: linear-gradient(180deg,#071018 0%, #0b1220 40%, #111827 100%); }
+  .page.dy .fake-site { background: linear-gradient(180deg,#14060b 0%, #0b1220 45%, #111827 100%); }
+</style>
+</head>
+<body>
+  <div class="page bili" id="page-bili">
+    <div class="fake-site">
+      <div class="topbar">
+        <div class="logo bili">bilibili</div>
+        <span class="chip">已登录示例账号</span>
+        <span class="chip">关注列表抓取</span>
+      </div>
+      <div class="hero">
+        <h1>B 站侧：抓取关注</h1>
+        <p>登录后任意 B 站页面右下角出现面板，一键分页拉取关注列表，可自动打开抖音继续。</p>
+        <div class="cards">
+          <div class="card"><div class="t">UP 示例 A</div><div class="s">已关注 · 科技</div></div>
+          <div class="card"><div class="t">UP 示例 B</div><div class="s">已关注 · 生活</div></div>
+          <div class="card"><div class="t">UP 示例 C</div><div class="s">已关注 · 游戏</div></div>
+        </div>
+      </div>
+
+      <div id="bds-panel">
+        <div class="hd">
+          <strong>B站 → 抖音 · 抓取关注</strong>
+          <button class="sec">−</button>
+        </div>
+        <div class="bd">
+          <div class="muted">完成 186 人</div>
+          <div class="bar"><i></i></div>
+          <label class="mini"><input type="checkbox" checked /> 抓完自动打开抖音</label>
+          <div class="row">
+            <button>抓取并开始</button>
+            <button class="sec">仅抓取</button>
+            <button class="ok">打开抖音</button>
+            <button class="sec">下载 JSON</button>
+          </div>
+          <div class="mini">抖音侧：搜用户 → 页面文本精确匹配 UP 名 → 定位卡片关注按钮 → 双重核验</div>
+          <div class="log">
+            <div>2026-07-22T10:18:02.000Z 导出 186</div>
+            <div>已打开抖音（固定单标签）</div>
+            <div>本地已有 186 人</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="page dy" id="page-dy" style="display:none">
+    <div class="fake-site">
+      <div class="topbar">
+        <div class="logo dy">抖音</div>
+        <span class="chip">用户搜索</span>
+        <span class="chip">精确匹配</span>
+      </div>
+      <div class="hero">
+        <h1>抖音侧：半自动同步</h1>
+        <p>自动 / 手动模式，展示昵称完全匹配才点关注；成功后冷却 10–15 秒，降低验证码与限流风险。</p>
+        <div class="cards">
+          <div class="card"><div class="t">综合</div><div class="s">搜索 Tab</div></div>
+          <div class="card"><div class="t">用户</div><div class="s">当前 Tab</div></div>
+          <div class="card"><div class="t">视频</div><div class="s">搜索 Tab</div></div>
+        </div>
+      </div>
+
+      <div id="bds-panel">
+        <div class="hd">
+          <div class="row">
+            <strong>抖音 · 同步关注</strong>
+            <span class="badge">自动中</span>
+          </div>
+          <button class="sec">−</button>
+        </div>
+        <div class="bd">
+          <div class="name">前进四科技实验室</div>
+          <div class="muted">#42/186 · mid 12345678</div>
+          <div class="bar"><i style="width:38%"></i></div>
+          <div class="stats">
+            <div class="stat"><b>186</b><span class="mini">总数</span></div>
+            <div class="stat"><b>71</b><span class="mini">已处理</span></div>
+            <div class="stat"><b>48</b><span class="mini">成功关注</span></div>
+            <div class="stat"><b>12</b><span class="mini">问题项</span></div>
+          </div>
+          <div class="mini">运行模式</div>
+          <div class="mode">
+            <button class="on">自动</button>
+            <button>手动</button>
+          </div>
+          <div class="row">
+            <span class="mini">匹配</span>
+            <select><option>完全精确（字符全等）</option></select>
+            <span class="mini">间隔ms</span>
+            <input type="number" value="12000" style="width:90px" />
+          </div>
+          <div class="row">
+            <button class="ok">开始 / 继续</button>
+            <button class="warn">暂停</button>
+            <button class="warn">查看问题项</button>
+          </div>
+          <div class="row">
+            <button class="ok">已关注→下个(F)</button>
+            <button class="sec">跳过(S)</button>
+            <button class="danger">未找到(X)</button>
+            <button class="sec">重置进度</button>
+          </div>
+          <div class="mini">自动：精确匹配后点关注；成功后冷却 10–15 秒。Web 限流常无提示：连续点关注无效会自动暂停。</div>
+          <div class="muted">锁定「前进四科技实验室」(dom_exact_nickname)</div>
+          <div class="log">
+            <div>[10:21:08] 当前匹配模式=exact（非 loose 一律按完全精确）</div>
+            <div>[10:21:09] 核验#1 精确文本命中=2 原因=dom_exact_nickname 按钮=关注</div>
+            <div>[10:21:10] 点击前复核通过：展示名完全匹配，精确文本命中 2 处</div>
+            <div>[10:21:11] 点击关注：前进四科技实验室</div>
+            <div>[10:21:13] 核验点击后#1 ok=true how=target_followed_btn</div>
+            <div>[10:21:13] 关注成功：前进四科技实验室</div>
+            <div>[10:21:13] 关注成功，冷却 12.4 秒再跳下一个（防验证码）…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
