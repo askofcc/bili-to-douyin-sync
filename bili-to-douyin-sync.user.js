@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         B站关注 → 抖音半自动同步
 // @namespace    https://github.com/askofcc/bili-to-douyin-sync
-// @version      0.5.5
-// @description  从 B 站导出关注列表，在抖音网页端半自动搜索同名 UP 并关注；精确匹配；识别 Web 静默限流
+// @version      0.5.6
+// @description  从 B 站导出关注列表，在抖音网页端半自动搜索同名 UP 并关注；精确匹配；识别 Web 静默限流；今日处理上限
 // @author       askofcc
 // @homepageURL  https://github.com/askofcc/bili-to-douyin-sync
 // @supportURL   https://github.com/askofcc/bili-to-douyin-sync/issues
@@ -27,6 +27,7 @@
   const K_CFG = "bili_douyin_cfg_v1";
   const K_BOOT = "bili_douyin_boot_v1";
   const K_NAV = "bili_douyin_nav_v1";
+  const K_DAY = "bili_douyin_day_v1";
 
   const host = location.hostname;
   const isBili = host.includes("bilibili.com");
@@ -41,6 +42,8 @@
     // 成功点关注后，再等这么久才跳下一个（随机区间，防验证码）
     afterFollowMinMs: 10000,
     afterFollowMaxMs: 15000,
+    // 今日处理上限：按「处理过的人数」计，不论成功失败；0=不限制
+    processCap: 50,
     autoOpenDouyin: true,
   };
 
@@ -53,6 +56,9 @@
     if (!c.afterFollowMaxMs || c.afterFollowMaxMs < c.afterFollowMinMs) {
       c.afterFollowMaxMs = Math.max(c.afterFollowMinMs + 5000, 15000);
     }
+    // processCap: 0 表示不限制；缺省 50
+    if (c.processCap == null || c.processCap === "") c.processCap = 50;
+    c.processCap = Math.max(0, Math.floor(Number(c.processCap) || 0));
     return c;
   }
   function saveCfg(c) {
@@ -77,6 +83,60 @@
     s.updatedAt = Date.now();
     GM_setValue(K_STATE, s);
   }
+
+  /** 本地日历日（Asia/Shanghai），用于「今日处理」计数 */
+  function todayDateStr() {
+    try {
+      return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(new Date());
+    } catch (_) {
+      const d = new Date();
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      return y + "-" + m + "-" + day;
+    }
+  }
+  function loadDayStats() {
+    const raw = GM_getValue(K_DAY, null) || {};
+    const today = todayDateStr();
+    if (raw.date !== today) {
+      return { date: today, processed: 0, success: 0 };
+    }
+    return {
+      date: today,
+      processed: Math.max(0, Number(raw.processed) || 0),
+      success: Math.max(0, Number(raw.success) || 0),
+    };
+  }
+  function saveDayStats(s) {
+    GM_setValue(K_DAY, {
+      date: s.date || todayDateStr(),
+      processed: Math.max(0, Number(s.processed) || 0),
+      success: Math.max(0, Number(s.success) || 0),
+    });
+  }
+  function bumpDayStats(statusKey) {
+    const s = loadDayStats();
+    s.processed += 1;
+    if (isSuccess(statusKey)) s.success += 1;
+    saveDayStats(s);
+    return s;
+  }
+  /** 是否达到「今日处理上限」。按处理人数，不按成功数。0=不限制 */
+  function processCapReached(cfg) {
+    const c = cfg || loadCfg();
+    const cap = Number(c.processCap);
+    if (!cap || cap <= 0) return false;
+    return loadDayStats().processed >= cap;
+  }
+  function processCapLabel(cfg) {
+    const c = cfg || loadCfg();
+    const cap = Number(c.processCap);
+    const day = loadDayStats();
+    if (!cap || cap <= 0) return "今日 " + day.processed + "（不限）";
+    return "今日 " + day.processed + "/" + cap;
+  }
+
   function loadNav() {
     return GM_getValue(K_NAV, null) || { lastAt: 0, count: 0, windowStart: Date.now() };
   }
@@ -1250,6 +1310,11 @@
       type: "number", min: "8000", step: "1000", value: String(cfg.betweenMs || 12000),
       style: "width:90px;background:#0b1220;color:#e5e7eb;border:1px solid #374151;border-radius:6px;padding:4px 6px",
     });
+    const capInput = el("input", {
+      type: "number", min: "0", step: "1", value: String(cfg.processCap != null ? cfg.processCap : 50),
+      title: "今日处理上限：按处理人数计（成功/失败/未找到都算），0=不限制",
+      style: "width:70px;background:#0b1220;color:#e5e7eb;border:1px solid #374151;border-radius:6px;padding:4px 6px",
+    });
 
     const btnAuto = el("button", { text: "自动" });
     const btnManual = el("button", { text: "手动" });
@@ -1276,10 +1341,14 @@
       cfg = loadCfg();
       cfg.matchMode = matchSel.value === "loose" ? "loose" : "exact";
       cfg.betweenMs = Math.max(8000, Number(gapInput.value) || 12000);
+      const capRaw = Number(capInput.value);
+      cfg.processCap = Number.isFinite(capRaw) ? Math.max(0, Math.floor(capRaw)) : 50;
+      capInput.value = String(cfg.processCap);
       saveCfg(cfg);
     }
     matchSel.onchange = persist;
     gapInput.onchange = persist;
+    capInput.onchange = persist;
 
     function setMode(m) {
       cfg = loadCfg();
@@ -1308,11 +1377,16 @@
       });
       bar.firstChild.style.width = list.length ? Math.round((done / list.length) * 100) + "%" : "0%";
       stats.innerHTML = "";
+      const day = loadDayStats();
+      const cap = Number(loadCfg().processCap);
+      const capText = !cap || cap <= 0 ? day.processed + "/∞" : day.processed + "/" + cap;
       [
         ["总数", list.length],
         ["已处理", done],
         ["成功关注", ok],
         ["问题项", bad],
+        ["今日处理", capText],
+        ["今日成功", day.success],
       ].forEach((p) => {
         stats.appendChild(el("div", { className: "stat" }, [
           el("b", { text: String(p[1]) }),
@@ -1335,7 +1409,8 @@
       return cur;
     }
 
-    function mark(statusKey) {
+    function mark(statusKey, opts) {
+      const countProcess = !opts || opts.count !== false;
       const payload = loadList();
       const state = loadState();
       skipEmptyNames(payload, state);
@@ -1350,6 +1425,13 @@
       if (isValidName(cur.item.name)) state.done[String(cur.item.name).trim()] = statusKey;
       state.index = cur.index + 1;
       saveState(state);
+      // 有效昵称记入今日处理数（空昵称跳过不计）；按处理进度，不按成功数
+      if (countProcess && isValidName(cur.item.name)) {
+        const day = bumpDayStats(statusKey);
+        const cap = Number(loadCfg().processCap);
+        if (cap > 0) log("今日处理 " + day.processed + "/" + cap + " · " + statusLabel(statusKey));
+        else log("今日处理 " + day.processed + " · " + statusLabel(statusKey));
+      }
       // 连续跳过后续空昵称
       let st2 = loadState();
       skipEmptyNames(payload, st2);
@@ -1434,6 +1516,25 @@
       }
     }
 
+    /** 达到今日处理上限则停机（按处理人数，成功失败都算） */
+    function stopForProcessCap(reason) {
+      const c = loadCfg();
+      const day = loadDayStats();
+      const cap = Number(c.processCap) || 0;
+      running = false;
+      busy = false;
+      setBadge("wait", "达上限");
+      const msg =
+        "今日已处理 " +
+        day.processed +
+        (cap > 0 ? "/" + cap : "") +
+        " 人，已达上限。改上限或明天再继续。" +
+        (reason ? "（" + reason + "）" : "");
+      status.textContent = msg;
+      log(msg);
+      refresh();
+    }
+
     async function goNext(statusKey) {
       document.querySelectorAll(".bds-hl").forEach((n) => n.classList.remove("bds-hl"));
       let next = mark(statusKey);
@@ -1454,6 +1555,11 @@
       }
       if (!running) {
         status.textContent = "已暂停/待命。点开始继续。";
+        return;
+      }
+      // 记完当前项后若已达今日处理上限，不再搜下一个
+      if (processCapReached()) {
+        stopForProcessCap("本轮停在下一项之前");
         return;
       }
       try {
@@ -1501,6 +1607,10 @@
     async function processOne() {
       if (busy) {
         log("忽略重入");
+        return;
+      }
+      if (processCapReached()) {
+        stopForProcessCap("进入处理前");
         return;
       }
       const payload = loadList();
@@ -1753,6 +1863,10 @@
       sessionStorage.setItem("bds_silent_fail_streak", "0");
       persist();
       refreshMode();
+      if (processCapReached()) {
+        stopForProcessCap("开始前已达上限；可提高「今日上限」或清零今日计数");
+        return;
+      }
       let cur = refresh();
       const payload0 = loadList();
       const st0 = loadState();
@@ -1820,6 +1934,17 @@
         refresh();
       },
     });
+    const btnClearDay = el("button", {
+      className: "sec",
+      text: "清零今日计数",
+      title: "只清零今日处理/成功统计，不改名单进度",
+      onClick: () => {
+        if (!confirm("清零今日处理计数？（名单进度不动）")) return;
+        saveDayStats({ date: todayDateStr(), processed: 0, success: 0 });
+        log("已清零今日计数");
+        refresh();
+      },
+    });
     const btnImport = el("button", {
       className: "sec", text: "导入 JSON", onClick: () => {
         try {
@@ -1853,9 +1978,13 @@
         el("span", { className: "mini", text: "匹配" }), matchSel,
         el("span", { className: "mini", text: "间隔ms" }), gapInput,
       ]),
+      el("div", { className: "row" }, [
+        el("span", { className: "mini", text: "今日上限" }), capInput,
+        el("span", { className: "mini", text: "（处理人数，0=不限）" }),
+      ]),
       el("div", { className: "row" }, [btnStart, btnPause, btnProb]),
-      el("div", { className: "row" }, [btnF, btnS, btnX, btnReset]),
-      el("div", { className: "mini", text: "自动：精确匹配后点关注；成功后冷却 10–15 秒。Web 限流常无提示：连续点关注无效会自动暂停（请用手机端确认「今天关注过多」）。" }),
+      el("div", { className: "row" }, [btnF, btnS, btnX, btnReset, btnClearDay]),
+      el("div", { className: "mini", text: "自动：精确匹配后点关注；成功后冷却 10–15 秒。今日上限按「处理人数」停机（成功/失败都算），降低风控；Web 限流常无提示，连续点关注无效会暂停（手机端确认「今天关注过多」）。" }),
       status, logBox, importArea,
       el("div", { className: "row" }, [btnImport]),
     ]);
